@@ -1,0 +1,263 @@
+// prisma/schema.prisma — 渔夫阿凯的AI仓库
+// 版本：v3（中台变更通知 1-11 + PRD F11 最新）
+// 详见 开发/技术选型.md 第四节
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 用户与权限 ====================
+
+model User {
+  id        String     @id @default(cuid())
+  phone     String     @unique
+  name      String
+  role      Role       @default(COLLABORATOR)
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  notes     Note[]
+}
+
+enum Role {
+  ADMIN          // 全权限
+  COLLABORATOR   // 中台变更8：内容权限=管理员，仅无用户管理
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+model VerificationCode {
+  id          String   @id @default(cuid())
+  phone       String
+  code        String
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  lockedUntil DateTime?
+  createdAt   DateTime @default(now())
+  @@index([phone, expiresAt])
+}
+
+// ==================== 内容分类与标签（中台变更9：三类内容共用一套分类/标签体系）====================
+
+// 中台变更2/9：主题分类（独立表，后台可增删改，不必跑迁移）
+// 8 类预设：写作辅助 / 编程开发 / 效率提升 / 创意设计 / 数据分析 / 知识检索 / 提示词工程 / AI基础与趋势
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  order     Int      @default(0)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  notes     Note[]
+  skills    Skill[]
+  events    AnalyticsEvent[]
+}
+
+// 中台变更3/9：主题标签（三类内容统一管理：查看使用量/合并重复/禁用冗余，总量≤30）
+model Tag {
+  id        String           @id @default(cuid())
+  name      String           @unique
+  group     String?          // 建议词表分组
+  usage     Int              @default(0) // 使用量缓存（Note+Skill+Service+Event 合计）
+  enabled   Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  notes     NoteTag[]
+  skills    SkillTag[]
+  services  ServiceTag[]
+  events    AnalyticsEventTag[]
+}
+
+// 笔记-标签
+model NoteTag {
+  noteId String
+  tagId  String
+  note   Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  @@id([noteId, tagId])
+  @@index([tagId])
+}
+
+// 中台变更9：Skill-标签（与笔记共用同一 Tag，合并/禁用统一生效）
+model SkillTag {
+  skillId String
+  tagId   String
+  skill   Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  tag     Tag   @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  @@id([skillId, tagId])
+  @@index([tagId])
+}
+
+// 中台变更9：AI服务-标签（共用 Tag；AI服务无 category，仅标签）
+model ServiceTag {
+  serviceId String
+  tagId     String
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  @@id([serviceId, tagId])
+  @@index([tagId])
+}
+
+// ==================== 笔记（中台变更1：移除 difficulty；变更4：series 可选）====================
+
+model Note {
+  id          String     @id @default(cuid())
+  title       String
+  slug        String     @unique
+  htmlPath    String
+  coverPath   String?
+  sourceTitle String?
+  sourceUrl   String?
+  categoryId  String?
+  category    Category?  @relation(fields: [categoryId], references: [id])
+  series      String?    // 中台变更4/9：可选，仅 Note 有 series；Skill/Service 无
+  audience    String[]   // 中台变更5：从 HTML 解析
+  summary     String
+  status      NoteStatus @default(DRAFT)
+  authorId    String
+  author      User       @relation(fields: [authorId], references: [id])
+  tags        NoteTag[]
+  events      AnalyticsEvent[]
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  // PRD F8：不设删除，下线即不展示
+  @@index([status, publishedAt])
+  @@index([categoryId])
+  @@index([series])
+}
+
+enum NoteStatus {
+  DRAFT
+  PENDING
+  PUBLISHED
+  OFFLINE
+}
+
+// ==================== F4 Skill推荐（中台变更9：+categoryId / +SkillTag 中间表 / -series）====================
+
+model Skill {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  url         String
+  coverPath   String?
+  categoryId  String?    // 中台变更9：笔记/Skill 共用同一套分类
+  category    Category?  @relation(fields: [categoryId], references: [id])
+  tags        SkillTag[] // 中台变更9：Tag 中间表
+  order       Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+// ==================== F5 AI服务（中台变更9：-categoryId / +ServiceTag 中间表）====================
+
+model Service {
+  id          String        @id @default(cuid())
+  name        String
+  description String
+  url         String
+  coverPath   String?
+  tags        ServiceTag[]  // 中台变更9：AI服务只有标签，无主题分类
+  status      ServiceStatus @default(DEVELOPING)
+  order       Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+enum ServiceStatus {
+  DEVELOPING
+  BETA
+  LIVE
+}
+
+// ==================== F11 站点与页面配置 ====================
+
+// - 1 条站点级 pageKey='site'：全站站名 + 一句话简介
+// - 5 条页面级 pageKey：home / notes / skills / services / about；仅 pageIntro
+// - 所有记录均无 pageTitle 字段
+model SiteConfig {
+  id        String   @id @default(cuid())
+  pageKey   String   @unique // 'site' | 'home' | 'notes' | 'skills' | 'services' | 'about'
+  siteName  String?          // 仅 pageKey='site' 时使用
+  siteIntro String?          // 仅 pageKey='site' 时使用
+  pageIntro String?          // 仅页面级记录使用
+  updatedAt DateTime @updatedAt
+}
+
+// 关于页时间线（可增删改，按年份倒序）
+model TimelineEntry {
+  id          String   @id @default(cuid())
+  year        Int
+  title       String
+  description String?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// 关于页交流入口卡片（可增删改，最多 6 张）
+model ContactCard {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  linkUrl     String
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== F10 埋点 ====================
+
+model AnalyticsEvent {
+  id          BigInt   @id @default(autoincrement())
+  eventType   String                  // 中台变更10：仅 page_view | card_click
+  pageType    String?                 // home | note_detail | category | skills | services | about
+  noteId      String?                 // page_view：笔记详情
+  note        Note?    @relation(fields: [noteId], references: [id])
+  cardType    String?                 // card_click：note | skill | service
+  targetId    String?                 // card_click：目标 ID
+  categoryId  String?                 // 中台变更7：主题分类
+  category    Category?  @relation(fields: [categoryId], references: [id])
+  series      String?
+  referrer    String?
+  path        String?
+  ua          String?
+  sessionId   String?
+  tags        AnalyticsEventTag[]
+  createdAt   DateTime @default(now())
+  @@index([eventType, createdAt])
+  @@index([noteId, eventType])
+  @@index([categoryId, eventType])
+  @@index([targetId, eventType])
+}
+
+model AnalyticsEventTag {
+  eventId BigInt
+  tagId   String
+  event   AnalyticsEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tag     Tag            @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  @@id([eventId, tagId])
+  @@index([tagId])
+}
+
+// ==================== 审计 ====================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String // upload / submit / publish / offline / login / config-edit / tag-merge
+  targetId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+}

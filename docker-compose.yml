@@ -1,0 +1,24 @@
+# docker-compose.yml — 本地 PostgreSQL（开发用）
+# 用法：docker compose up -d
+# 本机未装 Docker/PostgreSQL 时，可改用云数据库（Supabase/Neon 免费层）
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-fishery-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ai_fishery
+      POSTGRES_PASSWORD: ai_fishery_pass
+      POSTGRES_DB: ai_fishery
+    ports:
+      - "5432:5432"
+    volumes:
+      - ai-fishery-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_fishery"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ai-fishery-pgdata:
